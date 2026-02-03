@@ -65,8 +65,11 @@ class Viewer(BaseVisualizer):
         self.framesRootFrame = None
         self._viewer_initialized = False
         self.path = None
+        self.paths = {}
+        self._path_counter = 0
         self.path_playing = False
         self.path_thread = None
+        self.path_update_lock = False
 
     def __call__(self, q):
         """Allow calling viewer as v(q) for compatibility with Gepetto-GUI."""
@@ -217,6 +220,69 @@ class Viewer(BaseVisualizer):
         @self.frames_checkbox.on_update
         def _on_frames_toggle(_):
             self.displayFrames(self.frames_checkbox.value)
+
+        self._create_path_player()
+
+    def _create_path_player(self):
+        """Create the path player GUI controls (always visible)."""
+        path_folder = self.viewer.gui.add_folder("Path Player")
+
+        with path_folder:
+            self.path_dropdown = self.viewer.gui.add_dropdown(
+                "Path", options=["None"], initial_value="None"
+            )
+
+            self.path_slider = self.viewer.gui.add_slider(
+                "Position (s)",
+                min=0.0,
+                max=1.0,
+                step=0.001,
+                initial_value=0.0,
+            )
+
+            self.play_button = self.viewer.gui.add_button("Play")
+            self.stop_button = self.viewer.gui.add_button("Stop")
+
+            self.speed_slider = self.viewer.gui.add_slider(
+                "Speed", min=0.1, max=10.0, step=0.1, initial_value=1.0
+            )
+
+            self.fps_slider = self.viewer.gui.add_slider(
+                "Target FPS", min=10, max=120, step=5, initial_value=60
+            )
+
+        @self.path_dropdown.on_update
+        def _on_path_select(_):
+            self.path_playing = False
+            name = self.path_dropdown.value
+            if name == "None":
+                self.path = None
+                return
+            self.path = self.paths[name]
+            self.path_update_lock = True
+            self.path_slider.max = float(self.path.length())
+            self.path_slider.value = 0.0
+            self.path_update_lock = False
+            q, success = self.path.eval(0.0)
+            if success:
+                self.display(q)
+
+        @self.path_slider.on_update
+        def _on_slider_update(_):
+            if not self.path_update_lock and self.path is not None:
+                q, success = self.path.eval(self.path_slider.value)
+                if success:
+                    self.display(q)
+
+        @self.play_button.on_click
+        def _on_play_click(_):
+            if self.path is not None and not self.path_playing:
+                self.path_playing = True
+                self._start_path_animation()
+
+        @self.stop_button.on_click
+        def _on_stop_click(_):
+            self.path_playing = False
 
     def loadViewerGeometryObject(self, geometry_object, geometry_type, color=None):
         """Load a single geometry object with hierarchical naming."""
@@ -574,57 +640,32 @@ class Viewer(BaseVisualizer):
             height=height, width=width, transport_format=transport_format
         )
 
-    def loadPath(self, path):
-        """Load a path and create GUI controls for playback."""
-        self.path = path
+    def loadPath(self, path, name=None):
+        """Load a path into the path player dropdown."""
+        if name is None:
+            name = f"Path {self._path_counter}"
+        self._path_counter += 1
+
         self.path_playing = False
+        self.paths[name] = path
+        self.path = path
+
+        self.path_dropdown.options = list(self.paths.keys())
+        self.path_dropdown.value = name
+
+        self.path_update_lock = True
+        self.path_slider.max = float(path.length())
+        self.path_slider.value = 0.0
         self.path_update_lock = False
 
-        path_folder = self.viewer.gui.add_folder("Path Player")
-
-        with path_folder:
-            self.path_slider = self.viewer.gui.add_slider(
-                "Position (s)",
-                min=0.0,
-                max=float(path.length()),
-                step=0.001,
-                initial_value=0.0,
-            )
-
-            self.play_button = self.viewer.gui.add_button("▶ Play")
-            self.stop_button = self.viewer.gui.add_button("⏸ Stop")
-
-            self.speed_slider = self.viewer.gui.add_slider(
-                "Speed", min=0.1, max=10.0, step=0.1, initial_value=1.0
-            )
-
-            self.fps_slider = self.viewer.gui.add_slider(
-                "Target FPS", min=10, max=120, step=5, initial_value=60
-            )
-
-        @self.path_slider.on_update
-        def _on_slider_update(_):
-            if not self.path_update_lock:
-                q, success = self.path.eval(self.path_slider.value)
-                if success:
-                    self.display(q)
-
-        @self.play_button.on_click
-        def _on_play_click(_):
-            if not self.path_playing:
-                self.path_playing = True
-                self._start_path_animation()
-
-        @self.stop_button.on_click
-        def _on_stop_click(_):
-            self.path_playing = False
-
-        q, success = self.path.eval(0.0)
+        q, success = path.eval(0.0)
         if success:
             self.display(q)
 
     def _start_path_animation(self):
         """Start animating the path in a background thread."""
+        if self.path is None:
+            return
         if self.path_thread is not None and self.path_thread.is_alive():
             return
 
