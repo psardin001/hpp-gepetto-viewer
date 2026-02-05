@@ -1,5 +1,6 @@
 import time
 import warnings
+from dataclasses import dataclass, field
 
 try:
     import hppfcl
@@ -24,6 +25,31 @@ else:
 
 
 MESH_TYPES = (hppfcl.BVHModelBase, hppfcl.HeightFieldOBBRSS, hppfcl.HeightFieldAABB)
+
+
+@dataclass
+class _PathPlayerState:
+    current: object = None
+    paths: dict = field(default_factory=dict)
+    counter: int = 0
+    playing: bool = False
+    thread: object = None
+    update_lock: bool = False
+
+
+@dataclass
+class _DisplayState:
+    collisions: bool = False
+    visuals: bool = True
+    frames: bool = False
+
+
+@dataclass
+class _SelectionState:
+    node_name: str | None = None
+    frames: list = field(default_factory=list)
+    geom_name: str | None = None
+    geom_type: str | None = None
 
 
 class Viewer(BaseVisualizer):
@@ -57,19 +83,14 @@ class Viewer(BaseVisualizer):
             visual_data=None,
         )
         self.viser_frames = {}
-        self.display_collisions = False
-        self.display_visuals = True
-        self.display_frames_flag = False
+        self._display = _DisplayState()
+        self._path_player = _PathPlayerState()
+        self._selection = _SelectionState()
+        self._node_to_geom_info = {}
         self.viewerRootNodeName = None
         self.framesRootNodeName = None
         self.framesRootFrame = None
         self._viewer_initialized = False
-        self.path = None
-        self.paths = {}
-        self._path_counter = 0
-        self.path_playing = False
-        self.path_thread = None
-        self.path_update_lock = False
 
     def __call__(self, q):
         """Allow calling viewer as v(q) for compatibility with Gepetto-GUI."""
@@ -203,7 +224,7 @@ class Viewer(BaseVisualizer):
                 axes_radius=frame_axis_radius,
                 visible=False,
             )
-        self.display_frames_flag = False
+        self._display.frames = False
 
         # Add display controls
         self._create_display_controls()
@@ -253,36 +274,36 @@ class Viewer(BaseVisualizer):
 
         @self.path_dropdown.on_update
         def _on_path_select(_):
-            self.path_playing = False
+            self._path_player.playing = False
             name = self.path_dropdown.value
             if name == "None":
-                self.path = None
+                self._path_player.current = None
                 return
-            self.path = self.paths[name]
-            self.path_update_lock = True
-            self.path_slider.max = float(self.path.length())
+            self._path_player.current = self._path_player.paths[name]
+            self._path_player.update_lock = True
+            self.path_slider.max = float(self._path_player.current.length())
             self.path_slider.value = 0.0
-            self.path_update_lock = False
-            q, success = self.path.eval(0.0)
+            self._path_player.update_lock = False
+            q, success = self._path_player.current.eval(0.0)
             if success:
                 self.display(q)
 
         @self.path_slider.on_update
         def _on_slider_update(_):
-            if not self.path_update_lock and self.path is not None:
-                q, success = self.path.eval(self.path_slider.value)
+            if not self._path_player.update_lock and self._path_player.current is not None:
+                q, success = self._path_player.current.eval(self.path_slider.value)
                 if success:
                     self.display(q)
 
         @self.play_button.on_click
         def _on_play_click(_):
-            if self.path is not None and not self.path_playing:
-                self.path_playing = True
+            if self._path_player.current is not None and not self._path_player.playing:
+                self._path_player.playing = True
                 self._start_path_animation()
 
         @self.stop_button.on_click
         def _on_stop_click(_):
-            self.path_playing = False
+            self._path_player.playing = False
 
     def loadViewerGeometryObject(self, geometry_object, geometry_type, color=None):
         """Load a single geometry object with hierarchical naming."""
@@ -529,7 +550,7 @@ class Viewer(BaseVisualizer):
             pin.forwardKinematics(self.model, self.data, q)
 
         with self.viewer.atomic():
-            if self.display_visuals and self.visual_model is not None:
+            if self._display.visuals and self.visual_model is not None:
                 pin.updateGeometryPlacements(
                     self.model, self.data, self.visual_model, self.visual_data
                 )
@@ -546,7 +567,7 @@ class Viewer(BaseVisualizer):
                         frame.position = M.translation * visual.meshScale
                         frame.wxyz = pin.Quaternion(M.rotation).coeffs()[[3, 0, 1, 2]]
 
-            if self.display_collisions and self.collision_model is not None:
+            if self._display.collisions and self.collision_model is not None:
                 pin.updateGeometryPlacements(
                     self.model, self.data, self.collision_model, self.collision_data
                 )
@@ -563,7 +584,7 @@ class Viewer(BaseVisualizer):
                         frame.position = M.translation * collision.meshScale
                         frame.wxyz = pin.Quaternion(M.rotation).coeffs()[[3, 0, 1, 2]]
 
-            if self.display_frames_flag:
+            if self._display.frames:
                 self.updateFrames()
 
     def updateFrames(self):
@@ -582,7 +603,7 @@ class Viewer(BaseVisualizer):
 
     def displayCollisions(self, visibility):
         """Set whether to display collision objects or not."""
-        self.display_collisions = visibility
+        self._display.collisions = visibility
         if self.collision_model is None:
             return
 
@@ -595,7 +616,7 @@ class Viewer(BaseVisualizer):
 
     def displayVisuals(self, visibility):
         """Set whether to display visual objects or not."""
-        self.display_visuals = visibility
+        self._display.visuals = visibility
         if self.visual_model is None:
             return
 
@@ -606,7 +627,7 @@ class Viewer(BaseVisualizer):
 
     def displayFrames(self, visibility):
         """Set whether to display frames or not."""
-        self.display_frames_flag = visibility
+        self._display.frames = visibility
 
         if self.framesRootFrame is not None:
             self.framesRootFrame.visible = visibility
@@ -643,20 +664,20 @@ class Viewer(BaseVisualizer):
     def loadPath(self, path, name=None):
         """Load a path into the path player dropdown."""
         if name is None:
-            name = f"Path {self._path_counter}"
-        self._path_counter += 1
+            name = f"Path {self._path_player.counter}"
+        self._path_player.counter += 1
 
-        self.path_playing = False
-        self.paths[name] = path
-        self.path = path
+        self._path_player.playing = False
+        self._path_player.paths[name] = path
+        self._path_player.current = path
 
-        self.path_dropdown.options = list(self.paths.keys())
+        self.path_dropdown.options = list(self._path_player.paths.keys())
         self.path_dropdown.value = name
 
-        self.path_update_lock = True
+        self._path_player.update_lock = True
         self.path_slider.max = float(path.length())
         self.path_slider.value = 0.0
-        self.path_update_lock = False
+        self._path_player.update_lock = False
 
         q, success = path.eval(0.0)
         if success:
@@ -664,18 +685,18 @@ class Viewer(BaseVisualizer):
 
     def _start_path_animation(self):
         """Start animating the path in a background thread."""
-        if self.path is None:
+        if self._path_player.current is None:
             return
-        if self.path_thread is not None and self.path_thread.is_alive():
+        if self._path_player.thread is not None and self._path_player.thread.is_alive():
             return
 
         def animate():
-            path_length = self.path.length()
+            path_length = self._path_player.current.length()
             path_time = self.path_slider.value
             last_wall_time = time.perf_counter()
             slider_update_counter = 0
 
-            while self.path_playing and path_time < path_length:
+            while self._path_player.playing and path_time < path_length:
                 frame_start = time.perf_counter()
                 target_frame_time = 1.0 / self.fps_slider.value
 
@@ -685,16 +706,16 @@ class Viewer(BaseVisualizer):
                 path_time += wall_dt * self.speed_slider.value
                 path_time = min(path_time, path_length)
 
-                q, success = self.path.eval(path_time)
+                q, success = self._path_player.current.eval(path_time)
 
                 if success:
                     self.display(q)
 
                 slider_update_counter += 1
                 if slider_update_counter >= 10:
-                    self.path_update_lock = True
+                    self._path_player.update_lock = True
                     self.path_slider.value = path_time
-                    self.path_update_lock = False
+                    self._path_player.update_lock = False
                     slider_update_counter = 0
 
                 # Adaptive sleep
@@ -703,14 +724,14 @@ class Viewer(BaseVisualizer):
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-            self.path_update_lock = True
+            self._path_player.update_lock = True
             self.path_slider.value = 0.0 if path_time >= path_length else path_time
-            self.path_update_lock = False
+            self._path_player.update_lock = False
 
-            self.path_playing = False
+            self._path_player.playing = False
 
-        self.path_thread = threading.Thread(target=animate, daemon=True)
-        self.path_thread.start()
+        self._path_player.thread = threading.Thread(target=animate, daemon=True)
+        self._path_player.thread.start()
 
     def setBackgroundColor(self):
         raise NotImplementedError()
