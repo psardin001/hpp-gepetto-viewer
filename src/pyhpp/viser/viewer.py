@@ -304,7 +304,10 @@ class Viewer(BaseVisualizer):
 
         @self.path_slider.on_update
         def _on_slider_update(_):
-            if not self._path_player.update_lock and self._path_player.current is not None:
+            if (
+                not self._path_player.update_lock
+                and self._path_player.current is not None
+            ):
                 q, success = self._path_player.current.eval(self.path_slider.value)
                 if success:
                     self.display(q)
