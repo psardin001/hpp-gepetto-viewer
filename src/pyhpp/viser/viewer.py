@@ -242,7 +242,21 @@ class Viewer(BaseVisualizer):
         def _on_frames_toggle(_):
             self.displayFrames(self.frames_checkbox.value)
 
+        self._create_selection_panel()
         self._create_path_player()
+
+    def _create_selection_panel(self):
+        """Create GUI panel for displaying selected object info."""
+        selection_folder = self.viewer.gui.add_folder("Selected Object")
+
+        with selection_folder:
+            self._selection_name_text = self.viewer.gui.add_markdown("*None*")
+            self._selection_type_text = self.viewer.gui.add_markdown("")
+            self._focus_button = self.viewer.gui.add_button("Focus Selected")
+
+        @self._focus_button.on_click
+        def _on_focus_click(_):
+            self._focus_selected()
 
     def _create_path_player(self):
         """Create the path player GUI controls (always visible)."""
@@ -305,6 +319,75 @@ class Viewer(BaseVisualizer):
         def _on_stop_click(_):
             self._path_player.playing = False
 
+    def _register_click_callback(self, handle, node_name):
+        """Register a click callback on a mesh handle for selection."""
+
+        @handle.on_click
+        def _on_mesh_click(_):
+            self._select_node(node_name)
+
+    def _select_node(self, node_name):
+        """Select or deselect a scene node."""
+        if self._selection.node_name == node_name:
+            self._deselect()
+            return
+
+        self._deselect()
+
+        frames = self._get_geometry_frames(node_name)
+
+        geom_info = self._node_to_geom_info.get(node_name, {})
+        self._selection.node_name = node_name
+        self._selection.frames = frames
+        self._selection.geom_name = geom_info.get("name")
+        self._selection.geom_type = geom_info.get("type")
+
+        self._update_selection_panel()
+
+    def _deselect(self):
+        """Clear the current selection."""
+        self._selection.node_name = None
+        self._selection.frames = []
+        self._selection.geom_name = None
+        self._selection.geom_type = None
+        self._update_selection_panel()
+
+    def _update_selection_panel(self):
+        """Update the selection info panel GUI."""
+        if self._selection.geom_name is not None:
+            self._selection_name_text.content = f"**{self._selection.geom_name}**"
+            self._selection_type_text.content = f"Type: {self._selection.geom_type}"
+        else:
+            self._selection_name_text.content = "*None*"
+            self._selection_type_text.content = ""
+
+    def _focus_selected(self):
+        """Center the camera on the currently selected object."""
+        if self._selection.node_name is None:
+            return
+
+        geom_info = self._node_to_geom_info.get(self._selection.node_name, {})
+        geometry_type = geom_info.get("geometry_type")
+        geom_name = geom_info.get("name")
+        if geometry_type is None or geom_name is None:
+            return
+
+        if geometry_type == pin.GeometryType.VISUAL and self.visual_model is not None:
+            geom_id = self.visual_model.getGeometryId(geom_name)
+            position = self.visual_data.oMg[geom_id].translation
+        elif (
+            geometry_type == pin.GeometryType.COLLISION
+            and self.collision_model is not None
+        ):
+            geom_id = self.collision_model.getGeometryId(geom_name)
+            position = self.collision_data.oMg[geom_id].translation
+        else:
+            return
+
+        clients = self.viewer.get_clients()
+        for client in clients.values():
+            client.camera.look_at = position
+
     def loadViewerGeometryObject(self, geometry_object, geometry_type, color=None):
         """Load a single geometry object with hierarchical naming."""
         node_name = self.getGeometryObjectNodeName(
@@ -327,6 +410,10 @@ class Viewer(BaseVisualizer):
             primitive_color = (0.5, 0.5, 0.5, 1.0)
         else:
             primitive_color = color_override
+
+        type_str = (
+            "collision" if geometry_type == pin.GeometryType.COLLISION else "visual"
+        )
 
         try:
             if isinstance(geom, hppfcl.Box):
@@ -403,13 +490,24 @@ class Viewer(BaseVisualizer):
                 warnings.warn(msg, category=UserWarning, stacklevel=2)
                 return
 
+            # Store geometry info for selection lookups
+            geom_info = {
+                "name": geometry_object.name,
+                "type": type_str,
+                "geometry_type": geometry_type,
+            }
+
             # Handle both single frame and list of frames (for multi-geometry COLLADA)
             if isinstance(frame, list):
                 for i, f in enumerate(frame):
                     indexed_name = f"{node_name}_{i}"
                     self.viser_frames[indexed_name] = f
+                    self._node_to_geom_info[indexed_name] = geom_info
+                    self._register_click_callback(f, node_name)
             else:
                 self.viser_frames[node_name] = frame
+                self._node_to_geom_info[node_name] = geom_info
+                self._register_click_callback(frame, node_name)
 
         except Exception as e:
             msg = (
