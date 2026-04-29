@@ -111,6 +111,10 @@ class Viewer(BaseVisualizer):
         self._kinematic_frames = {}  # {viser_path: frame_name}
         self._viewer_initialized = False
         self.start_qt_viewer = False
+        self._react_graph_viewer_port = 6789
+        self._react_graph_viewer_host = "localhost"
+        self._web_socket_bridge_port = 8765
+        self._web_socket_bridge_host = "localhost"
 
         self.problem = problem
         self.graph = None
@@ -1036,6 +1040,12 @@ class Viewer(BaseVisualizer):
         @self._graph_button.on_click
         def _on_show_graph_click(_):
             self._launch_graph_viewer()
+            if not self.start_qt_viewer:
+                import webbrowser
+
+                webbrowser.open(
+                    f"http://{self._react_graph_viewer_host}:{self._react_graph_viewer_port}"
+                )
 
     def _create_visibility_toggles(self):
         """Create checkboxes for toggling visibility of scene elements."""
@@ -1129,6 +1139,26 @@ class Viewer(BaseVisualizer):
         self.graph = graph
         self._publish_viewer_snapshot()
 
+    def setupReactGraphViewer(self, port: int, host: str = "localhost"):
+        """Set the port for the React-based graph viewer.
+
+        Args:
+            port: The port number to use for the React viewer.
+            host: The host address for the React viewer.
+        """
+        self._react_graph_viewer_port = port
+        self._react_graph_viewer_host = host
+
+    def setupWebSocketBridge(self, port: int, host: str = "localhost"):
+        """Set the port for the WebSocket-based graph viewer (Qt).
+
+        Args:
+            port: The port number to use for the WebSocket viewer.
+            host: The host address for the WebSocket viewer.
+        """
+        self._web_socket_bridge_port = port
+        self._web_socket_bridge_host = host
+
     def setQtGraphViewer(self, choice=True):
         """Set whether to start the Qt-based graph viewer instead of the React-based one.
 
@@ -1163,8 +1193,10 @@ class Viewer(BaseVisualizer):
                 self.graph,
                 self.problem,
                 self._on_config_generated,
-                ws_host="127.0.0.1",
-                ws_port=8765,
+                react_port=self._react_graph_viewer_port,
+                react_host=self._react_graph_viewer_host,
+                ws_port=self._web_socket_bridge_port,
+                ws_host=self._web_socket_bridge_host,
                 start_qt_viewer=self.start_qt_viewer,
             )
             self._graph_thread = thread
